@@ -2,9 +2,9 @@
 from ops import to_perc, get_client_rr
 client_rr = get_client_rr()
 
-
-# Describe it
+# Here's how the descriptive statistics of the response rate dataset look
 rr_global_stats = client_rr.describe()
+rr_global_stats["Final"]
 
 mean = rr_global_stats.ix['mean', 'Final'] 
 std = rr_global_stats.ix['std', 'Final']
