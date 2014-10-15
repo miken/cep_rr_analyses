@@ -55,3 +55,28 @@ def get_client_rr():
     return final_client_rr
 
 
+def rr_stats_by_round(client_rr):
+    '''
+    Given the client response rate dataset client_rr, this
+    function will generate descriptive statistics broken down
+    by survey round
+
+    Make sure you have `numexpr` package installed for the query to work
+    '''
+    # Next break down response rates by round
+    raw_round_stats = client_rr.groupby('Round').describe()
+    # We're only interested in mean response rates across weeks here,
+    # so let's filter for those indices
+    # First, name index for query
+    raw_round_stats.index.names = [u'Round', u'Stats']
+    # Now do the query
+    round_stats = raw_round_stats.query('Stats == "mean"')
+    # Reindex the table with just round values
+    round_stats["Round"] = round_stats.index.levels[0]
+    # Reset the index
+    round_stats = round_stats.reset_index(drop=True).set_index("Round")
+    # Reorder the index
+    round_stats = round_stats.ix[["12S", "12X", "12F", "13S", "13X", "13F", "14S", "14X"]]
+    # Export this file to CSV
+    round_stats.to_csv('round_stats.csv')
+    return round_stats
