@@ -1,6 +1,26 @@
 # coding: utf-8
 import pandas as pd
-from sklearn import linear_model
+from math import sqrt
+from scipy.stats import ttest_ind, levene
+
+
+# Significance threshold used in statistical testing
+SIG_LEVEL = 0.1
+
+# Effect size language & sign dict
+EFF_LANG_DICT = {
+    'NONE': 'no effect size',
+    'SMALL': 'small effect size',
+    'MEDIUM': 'medium effect size',
+    'LARGE': 'large effect size',
+}
+
+EFF_SIGN_DICT = {
+    'NONE': '',
+    'SMALL': '',
+    'MEDIUM': '*',
+    'LARGE': '*',
+}
 
 # Helper functions
 def to_perc(val):
@@ -123,19 +143,114 @@ def rr_stats_by_season(client_rr):
     Make sure you have `numexpr` package installed for the query to work
     '''
     # Next break down response rates by round
-    raw_round_stats = client_rr.groupby('Season').describe()
+    raw_stats = client_rr.groupby('Season').describe()
     # We're only interested in mean response rates across weeks here,
     # so let's filter for those indices
     # First, name index for query
-    raw_round_stats.index.names = [u'Round', u'Stats']
+    raw_stats.index.names = [u'Round', u'Stats']
     # Now do the query
-    round_stats = raw_round_stats.query('Stats == "mean"')
+    stats = raw_stats.query('Stats == "mean"')
     # Reindex the table with just round values
-    round_stats["Round"] = round_stats.index.levels[0]
+    stats["Round"] = stats.index.levels[0]
     # Reset the index
-    round_stats = round_stats.reset_index(drop=True).set_index("Round")
+    stats = stats.reset_index(drop=True).set_index("Round")
     # Reorder the index
-    round_stats = round_stats.ix[["12S", "12X", "12F", "13S", "13X", "13F", "14S", "14X"]]
+    stats = stats.ix[["12S", "12X", "12F", "13S", "13X", "13F", "14S", "14X"]]
     # Export this file to CSV
-    round_stats.to_csv('round_stats.csv')
+    round_stats = stats.to_csv('round_stats.csv')
     return round_stats
+
+
+def get_cohens(sample_a, sample_b):
+    '''
+    Calculate absolute value of Cohen's d from two samples
+    Sample A and Sample B are array-like data stores
+    Ideally they should be numpy arrays or pandas Series
+    So we can perform mean and standard deviation calculations with them    
+    '''
+    mean_a = sample_a.mean()
+    mean_b = sample_b.mean()
+    std_a = sample_a.std()
+    std_b = sample_b.std()
+    numer = mean_a - mean_b
+    denom = sqrt((std_a**2 + std_b**2) / 2)
+    cohens_d = numer / denom
+    return abs(cohens_d)
+
+
+def translate_result(pval, mean_diff, sample_a, sample_b):
+    '''
+    This function returns a tuple of verdict, sign, and cohens_d
+    verdict can be "Not significant", "Small effect size", etc.
+    sign can be blank, "*", "**", etc.
+    based on the given p-value
+    '''
+    if pval < SIG_LEVEL:
+        cohens_d = get_cohens(sample_a, sample_b)
+        if cohens_d < .15:
+            lang = 'NONE'
+        elif .15 <= cohens_d < .45:
+            lang = 'SMALL'
+        elif .45 <= cohens_d < .75:
+            lang = 'MEDIUM'
+        elif .75 <= cohens_d:
+            lang = 'LARGE'
+        message = EFF_LANG_DICT[lang]
+        cohen_sign = EFF_SIGN_DICT[lang]
+        diff = '%0.2f' % mean_diff
+        # sign = diff
+        sign = '{diff}{cs}'.format(diff=diff, cs=cohen_sign)
+        verdict = message.title()
+    else:
+        verdict = "Not significant"
+        sign = None
+        cohens_d = None
+    return verdict, sign, cohens_d
+
+
+def cep_ttest(sample_a, sample_b):
+    '''
+    Sample A and Sample B are array-like data stores
+    Ideally they should be numpy arrays or pandas Series
+    So we can perform mean and standard deviation calculations with them
+    The function will return a dictionary with the following entries:
+        "test": "Standard" (equal variance) or "Welch" (not equal variance)
+        "pval": P-value of the test performed
+        "verdict": "Not significant" or effect size specified
+        "cohen": Cohen's d value
+        "sign": blank, ".", "*", "**", or "***" depending on p-value and significance
+        "g1_n": response count in sample_a
+        "g2_n": response count in sample_b
+    '''
+    # Construct a result_dict
+    result_dict = {}
+    # First, perform a Levene's test to determine whether the samples have equal variances
+    equal_var_test = levene(sample_a, sample_b, center='mean')
+    # The significance stat is the second element in the result tuple
+    equal_var_test_sig = equal_var_test[1]
+    # Then, depending on the result, we'll perform either a standard or a Welch's test
+    # If there's no result, then end test here
+    if pd.isnull(equal_var_test_sig):
+        result_dict['test'] = 'N/A'
+    else:
+        if equal_var_test_sig >= SIG_LEVEL:
+            equal_var_arg = True
+            result_dict['test'] = 'Standard'
+        elif equal_var_test_sig < SIG_LEVEL:
+            equal_var_arg = False
+            result_dict['test'] = 'Welch'
+        ttest_result = ttest_ind(sample_a, sample_b, axis=0, equal_var=equal_var_arg)
+        ttest_result_sig = ttest_result[1]
+        result_dict['pval'] = ttest_result_sig
+        # If it's not significant, end here
+        # Translate result here
+        mean_diff = sample_a.mean() - sample_b.mean()
+        verdict, sign, cohens_d = translate_result(ttest_result_sig, mean_diff, sample_a, sample_b)
+        result_dict['cohen'] = cohens_d
+        result_dict['verdict'] = verdict
+        result_dict['sign'] = sign
+        result_dict['g1_n'] = sample_a.count()
+        result_dict['g2_n'] = sample_b.count()
+        result_dict['g1_mean'] = sample_a.mean()
+        result_dict['g2_mean'] = sample_b.mean()        
+    return result_dict
